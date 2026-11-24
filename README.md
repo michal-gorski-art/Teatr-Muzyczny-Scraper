@@ -24,6 +24,24 @@ Watched rows (edit `WATCHED_ROWS` in `config.py`):
 4. Emails new finds in one message and records them in `state.json`. Past performances are
    dropped from the state automatically.
 
+## Failure alerts
+
+If the site changes and the scraper can no longer read it, you would otherwise just stop getting
+emails. So it also emails **"Teatr Muzyczny: scraper nie działa"** when a run fails, meaning:
+
+- the repertoire page can't be loaded, or shows no Duża Scena performances with "Kup bilet", or
+- at least half the performances can't be checked (seat map or seat data not in the expected
+  format, none of the watched sections on the map, and so on).
+
+To avoid noise from a short outage, the alert only goes out after 3 failed runs in a row
+(1.5 hours with cron every 30 minutes). It repeats at most once a day while the problem lasts,
+and you get one "scraper działa ponownie" email when it works again. The thresholds are the
+`ALERT_*` settings in `config.py`. To check that alert emails arrive:
+
+```bash
+./run.sh --test-alert
+```
+
 ## Setup (Raspberry Pi)
 
 ```bash
@@ -34,6 +52,7 @@ python3 -m venv .venv
 cp .env.example .env   # then fill in GMAIL_USER, GMAIL_APP_PASSWORD, MAIL_TO
 chmod 600 .env
 ./run.sh --dry-run     # prints what it finds; sends nothing, saves nothing
+./run.sh --test-alert  # sends a sample failure alert to check the email setup
 ./run.sh               # first real run: emails everything currently free
 ```
 

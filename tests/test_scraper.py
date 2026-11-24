@@ -115,6 +115,15 @@ def test_watched_rows(seat_page, free_json, section, row, watched):
     assert bool(groups) is watched
 
 
+def test_only_normal_price_is_kept():
+    title = ("Rząd:&nbsp;1;Miejsce:&nbsp;1<br />Ceny biletów:<br /><table>"
+             "<tr><td>bilet normalny I</td><td>200 zł</td></tr>"
+             "<tr><td>bilet ulgowy I</td><td>180 zł</td></tr>"
+             "<tr><td>bilet szkolny I</td><td>180 zł</td></tr></table>")
+    seats = scraper.parse_free_json({"status": 0, "miejsca": [{"id": 1, "class": "w w3", "title": title}]})
+    assert seats[0].price == "bilet normalny I 200 zł"
+
+
 def _event(event_id="1", day=date(2030, 1, 1)):
     return scraper.Event(event_id, "abc", "TEST", day, "19.00", "Duża Scena", "https://example.invalid/x")
 
@@ -168,3 +177,81 @@ def test_email_lists_seats_and_link():
     assert "(1)" in subject
     assert "PARTER, rząd 1: miejsca 4, 5" in text
     assert "https://example.invalid/x" in html
+
+
+# ------------------------------------------------------- failure alerts
+
+from datetime import datetime, timedelta  # noqa: E402
+
+import config  # noqa: E402
+
+T0 = datetime(2026, 11, 24, 8, 0)
+
+
+def _runs(state, outcomes, start=T0, step=timedelta(minutes=30)):
+    """Feed a sequence of run outcomes (None = ok, str = problem); return subjects emailed."""
+    sent = []
+    for i, problem in enumerate(outcomes):
+        msg = scraper.health_message(state, problem, start + i * step)
+        sent.append(msg[0] if msg else None)
+    return sent
+
+
+def test_alert_only_after_several_failed_runs():
+    sent = _runs({}, ["boom"] * config.ALERT_AFTER_FAILED_RUNS)
+    assert sent[:-1] == [None] * (config.ALERT_AFTER_FAILED_RUNS - 1)
+    assert "nie działa" in sent[-1]
+
+
+def test_short_outage_stays_quiet():
+    assert _runs({}, ["boom", None, "boom", None]) == [None] * 4
+
+
+def test_alert_repeats_daily_not_every_run_then_recovers():
+    state = {}
+    runs_per_day = 48
+    sent = _runs(state, ["boom"] * (config.ALERT_AFTER_FAILED_RUNS + runs_per_day) + [None, None])
+    alerts = [s for s in sent if s and "nie działa" in s]
+    assert len(alerts) == 2  # first alert + one repeat 24 h later
+    assert "działa ponownie" in sent[-2]
+    assert sent[-1] is None
+    assert state["health"]["failed_runs"] == 0
+
+
+def test_alert_text_includes_problem_and_last_success():
+    state = {}
+    _runs(state, [None])
+    msg = None
+    for i in range(config.ALERT_AFTER_FAILED_RUNS):
+        msg = scraper.health_message(state, "seat map has no seats", T0 + timedelta(hours=i + 1)) or msg
+    assert "seat map has no seats" in msg[1]
+    assert T0.isoformat(timespec="minutes") in msg[1]
+
+
+def test_unrecognised_seat_titles_raise():
+    with pytest.raises(ValueError):
+        scraper.parse_free_json({"status": 0, "miejsca": [{"id": 1, "class": "w", "title": "Row 1, seat 1"}]})
+
+
+def test_scan_reports_problem_when_most_events_fail(monkeypatch):
+    events = [_event(str(i)) for i in range(4)]
+    monkeypatch.setattr(scraper, "get", lambda *a, **k: type("R", (), {"text": ""})())
+    monkeypatch.setattr(scraper, "parse_repertoire", lambda html: events)
+    monkeypatch.setattr(scraper.time, "sleep", lambda s: None)
+
+    def check(session, event):
+        if event.id in ("0", "1"):
+            raise ValueError("seat page has no wiz_id")
+        return []
+
+    monkeypatch.setattr(scraper, "check_event", check)
+    findings, problem = scraper.scan(None, {}, date(2026, 1, 1))
+    assert findings == []
+    assert problem.startswith("2 of 4 performances could not be checked")
+    assert "seat page has no wiz_id" in problem
+
+
+def test_scan_reports_problem_when_no_events_found(monkeypatch):
+    monkeypatch.setattr(scraper, "get", lambda *a, **k: type("R", (), {"text": "<html></html>"})())
+    findings, problem = scraper.scan(None, {}, date(2026, 1, 1))
+    assert findings == [] and "layout has probably changed" in problem

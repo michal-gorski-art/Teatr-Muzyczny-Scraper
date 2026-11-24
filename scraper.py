@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -173,7 +173,11 @@ def parse_free_json(data: dict) -> list[Seat]:
             row, number = _to_int(m.group(1)), _to_int(m.group(2))
         except (KeyError, ValueError):
             continue
-        price = ", ".join(f"{a.strip()} {b.strip()}" for a, b in PRICE_RE.findall(title))
+        prices = [f"{a.strip()} {b.strip()}" for a, b in PRICE_RE.findall(title)]
+        # Only the full-price ticket ("bilet normalny", "NORMALNY", "bilet normalny I");
+        # fall back to everything if a show names it differently.
+        normal = [p for p in prices if "normalny" in p.lower()]
+        price = ", ".join(normal or prices)
         seats.append(Seat(
             id=int(item["id"]),
             row=row,
@@ -182,6 +186,8 @@ def parse_free_json(data: dict) -> list[Seat]:
             # e.g. "w w3": free, in price tier 3
             free=FREE_CLASS in (item.get("class") or "").split(),
         ))
+    if data.get("miejsca") and not seats:
+        raise ValueError("seat descriptions no longer look like 'Rząd: N;Miejsce: N'")
     return seats
 
 
@@ -339,34 +345,94 @@ def check_event(session: requests.Session, event: Event) -> list[SeatGroup]:
         headers={"X-Requested-With": "XMLHttpRequest", "Referer": event.ticket_url},
     ).json()
     seats = parse_free_json(data)
+    if not positions:
+        raise ValueError("seat map has no seats")
     sections = assign_sections(positions, labels)
+    if not set(config.WATCHED_ROWS) & set(sections.values()):
+        raise ValueError(f"seat map has none of the watched sections (labels found: {[l[0] for l in labels]})")
     return find_groups(seats, positions, sections)
 
 
-def run(dry_run: bool) -> int:
-    session = make_session()
-    events = parse_repertoire(get(session, config.REPERTOIRE_URL).text)
-    today = date.today()
+def scan(session: requests.Session, state: dict, today: date):
+    """Check every upcoming event. Returns (findings, problem or None)."""
+    try:
+        events = parse_repertoire(get(session, config.REPERTOIRE_URL).text)
+    except Exception as exc:
+        return [], f"Could not read the repertoire page {config.REPERTOIRE_URL}: {exc}"
     events = [e for e in events if e.date >= today]
+    if not events:
+        return [], (f"Found no {', '.join(config.STAGES)} performances with a 'Kup bilet' link on "
+                    f"{config.REPERTOIRE_URL}. The page layout has probably changed.")
     log.info("checking %d events", len(events))
 
-    state = load_state()
-    prune_state(state, today)
-    findings, failures = [], 0
-
+    findings, errors = [], []
     for i, event in enumerate(events):
         if i:
             time.sleep(config.REQUEST_DELAY_SECONDS)
         try:
             groups = check_event(session, event)
         except Exception as exc:  # one broken event must not stop the run
-            failures += 1
+            errors.append(f"{event.date} {event.time} {event.title}: {exc}\n    {event.ticket_url}")
             log.error("%s %s (id %s): %s", event.date, event.title, event.id, exc)
             continue
         fresh = new_groups(state, event, groups)
         log.info("%s %s %s: %d group(s), %d new", event.date, event.time, event.title, len(groups), len(fresh))
         if fresh:
             findings.append((event, fresh))
+
+    problem = None
+    if errors and len(errors) >= config.ALERT_FAILED_EVENTS_RATIO * len(events):
+        shown = "\n".join(errors[:10]) + (f"\n... and {len(errors) - 10} more" if len(errors) > 10 else "")
+        problem = f"{len(errors)} of {len(events)} performances could not be checked:\n\n{shown}"
+    return findings, problem
+
+
+def health_message(state: dict, problem: str | None, now: datetime):
+    """Update the run-health record and return (subject, text) to email, or None.
+
+    An alert goes out once the problem has lasted ALERT_AFTER_FAILED_RUNS runs in a
+    row (so a short outage stays quiet), then at most every ALERT_REPEAT_HOURS while
+    it lasts. A single "working again" email follows once a run succeeds.
+    """
+    h = state.setdefault("health", {})
+    if problem is None:
+        h["failed_runs"] = 0
+        h["last_ok"] = now.isoformat(timespec="minutes")
+        if h.pop("alert_sent", None):
+            h.pop("problem", None)
+            return ("Teatr Muzyczny: scraper działa ponownie",
+                    "The free-seat scraper is working again; seat alerts have resumed.")
+        h.pop("problem", None)
+        return None
+
+    h["failed_runs"] = h.get("failed_runs", 0) + 1
+    h["problem"] = problem
+    if h["failed_runs"] < config.ALERT_AFTER_FAILED_RUNS:
+        return None
+    last = h.get("alert_sent")
+    if last and now - datetime.fromisoformat(last) < timedelta(hours=config.ALERT_REPEAT_HOURS):
+        return None
+    h["alert_sent"] = now.isoformat(timespec="minutes")
+    text = (
+        "The Teatr Muzyczny free-seat scraper is failing, so you will not get seat alerts "
+        "until it is fixed. The website's format may have changed.\n\n"
+        f"Failed runs in a row: {h['failed_runs']}\n"
+        f"Last successful run: {h.get('last_ok', 'never')}\n\n"
+        f"{problem}\n\n"
+        f"Details are in {config.LOG_FILE} on the machine running it."
+    )
+    return "Teatr Muzyczny: scraper nie działa", text
+
+
+def run(dry_run: bool) -> int:
+    session = make_session()
+    today, now = date.today(), datetime.now()
+    state = load_state()
+    prune_state(state, today)
+
+    findings, problem = scan(session, state, today)
+    if problem:
+        log.error("run problem: %s", problem.splitlines()[0])
 
     if findings:
         subject, text, html = notifier.build_message(findings)
@@ -377,14 +443,33 @@ def run(dry_run: bool) -> int:
             log.info("email sent: %s", subject)
             for event, groups in findings:
                 remember(state, event, groups)
-    else:
+    elif not problem:
         log.info("nothing new")
+
+    health = health_message(state, problem, now)
+    if health:
+        subject, text = health
+        if dry_run:
+            print("\n" + subject + "\n\n" + text)
+        else:
+            try:
+                notifier.send_email(subject, text, f"<pre>{htmllib.escape(text)}</pre>")
+                log.info("email sent: %s", subject)
+            except Exception:
+                log.exception("could not send health email")
+                state["health"].pop("alert_sent", None)  # try again next run
 
     if not dry_run:
         save_state(state)
-    if failures and failures == len(events):
-        log.error("every event failed; the site layout may have changed")
-        return 2
+    return 2 if problem else 0
+
+
+def send_test_alert() -> int:
+    """Send a sample failure email to check the mail setup."""
+    state = {"health": {"failed_runs": config.ALERT_AFTER_FAILED_RUNS - 1}}
+    subject, text = health_message(state, "This is a test alert sent with --test-alert.", datetime.now())
+    notifier.send_email("[TEST] " + subject, text, f"<pre>{htmllib.escape(text)}</pre>")
+    log.info("test alert sent")
     return 0
 
 
@@ -402,6 +487,7 @@ def setup_logging(verbose: bool) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dry-run", action="store_true", help="print findings; no email, no state change")
+    parser.add_argument("--test-alert", action="store_true", help="send a sample 'scraper failing' email and exit")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -411,6 +497,8 @@ def main() -> int:
         log.error("GMAIL_USER and GMAIL_APP_PASSWORD must be set (see .env.example)")
         return 1
     try:
+        if args.test_alert:
+            return send_test_alert()
         return run(args.dry_run)
     except Exception:
         log.exception("run failed")

@@ -33,6 +33,14 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 )
 
+# Failure alerts: email when a run fails (site down for good, or its format
+# changed) this many runs in a row; with cron every 30 min, 3 runs = 1.5 h.
+ALERT_AFTER_FAILED_RUNS = 3
+# A run counts as failed when at least this share of performances can't be checked.
+ALERT_FAILED_EVENTS_RATIO = 0.5
+# While still failing, repeat the alert at most this often.
+ALERT_REPEAT_HOURS = 24
+
 STATE_FILE = BASE_DIR / "state.json"
 ENV_FILE = BASE_DIR / ".env"
 LOG_FILE = BASE_DIR / "scraper.log"
