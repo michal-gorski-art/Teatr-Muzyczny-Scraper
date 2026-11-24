@@ -34,8 +34,8 @@ USER_AGENT = (
 )
 
 # Failure alerts: email when a run fails (site down for good, or its format
-# changed) this many runs in a row; with cron every 30 min, 3 runs = 1.5 h.
-ALERT_AFTER_FAILED_RUNS = 3
+# changed) this many runs in a row; with cron every 2 hours, 2 runs = 4 h.
+ALERT_AFTER_FAILED_RUNS = 2
 # A run counts as failed when at least this share of performances can't be checked.
 ALERT_FAILED_EVENTS_RATIO = 0.5
 # While still failing, repeat the alert at most this often.

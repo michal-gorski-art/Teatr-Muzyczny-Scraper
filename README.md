@@ -33,8 +33,8 @@ emails. So it also emails **"Teatr Muzyczny: scraper nie działa"** when a run f
 - at least half the performances can't be checked (seat map or seat data not in the expected
   format, none of the watched sections on the map, and so on).
 
-To avoid noise from a short outage, the alert only goes out after 3 failed runs in a row
-(1.5 hours with cron every 30 minutes). It repeats at most once a day while the problem lasts,
+To avoid noise from a short outage, the alert only goes out after 2 failed runs in a row
+(4 hours with cron every 2 hours). It repeats at most once a day while the problem lasts,
 and you get one "scraper działa ponownie" email when it works again. The thresholds are the
 `ALERT_*` settings in `config.py`. To check that alert emails arrive:
 
@@ -59,10 +59,10 @@ chmod 600 .env
 The Gmail account needs 2-step verification and an
 [app password](https://myaccount.google.com/apppasswords).
 
-Cron (`crontab -e`), every 30 minutes from 8:00 to 23:30:
+Cron (`crontab -e`), every 2 hours, on the hour:
 
 ```
-*/30 8-23 * * * /home/pi/Teatr-Muzyczny-Scraper/run.sh >/dev/null 2>&1
+0 */2 * * * /home/pi/Teatr-Muzyczny-Scraper/run.sh >/dev/null 2>&1
 ```
 
 Logs go to `scraper.log` (rotated at 1 MB). A full run takes a few minutes because it waits
