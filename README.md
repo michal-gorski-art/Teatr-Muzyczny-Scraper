@@ -1,4 +1,4 @@
-# Muzyczny-Scraper
+# Teatr-Muzyczny-Scraper
 
 Watches [Teatr Muzyczny Gdynia](https://muzyczny.org/pl/repertuar.html) for free seats near the
 stage on Duża Scena and emails you when **2 or more seats side by side** come up. A seat group is
@@ -45,8 +45,8 @@ and you get one "scraper działa ponownie" email when it works again. The thresh
 ## Setup (Raspberry Pi)
 
 ```bash
-git clone <this repo> ~/Muzyczny-Scraper
-cd ~/Muzyczny-Scraper
+git clone https://github.com/michal-gorski-art/Teatr-Muzyczny-Scraper.git ~/Teatr-Muzyczny-Scraper
+cd ~/Teatr-Muzyczny-Scraper
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env   # then fill in GMAIL_USER, GMAIL_APP_PASSWORD, MAIL_TO
@@ -62,7 +62,7 @@ The Gmail account needs 2-step verification and an
 Cron (`crontab -e`), every 30 minutes from 8:00 to 23:30:
 
 ```
-*/30 8-23 * * * /home/pi/Muzyczny-Scraper/run.sh >/dev/null 2>&1
+*/30 8-23 * * * /home/pi/Teatr-Muzyczny-Scraper/run.sh >/dev/null 2>&1
 ```
 
 Logs go to `scraper.log` (rotated at 1 MB). A full run takes a few minutes because it waits
